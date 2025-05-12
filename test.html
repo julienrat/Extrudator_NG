@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>Extrusion SVG en 3D avec Three.js</title>
+  <style>
+    body { font-family: sans-serif; padding: 1em; }
+    #viewer { width: 600px; height: 400px; }
+    canvas { border: 1px solid #ccc; }
+    .color-selector {
+      display: flex;
+      align-items: center;
+      gap: 0.5em;
+      padding: 0.5em;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      margin: 0.25em;
+    }
+    .height-control {
+      display: flex;
+      align-items: center;
+      gap: 0.5em;
+      margin-left: 1em;
+    }
+    .height-value {
+      min-width: 3em;
+    }
+  </style>
+  <script async src="https://unpkg.com/es-module-shims@1.8.0/dist/es-module-shims.js"></script>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.1/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.1/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <h1>Visualisation d'un SVG extrudé en 3D</h1>
+  <div style="margin-bottom: 1em;">
+    <input type="file" id="file-input" accept=".svg">
+    <div style="margin-top: 1em;">
+      <label>Couleurs détectées dans le SVG:</label>
+      <div id="color-selectors" style="display: flex; flex-wrap: wrap; gap: 0.5em; margin-top: 0.5em;"></div>
+    </div>
+  </div>
+  <p id="status">En attente d'un fichier SVG...</p>
+  <div style="margin-bottom: 1em;">
+    <button id="export-stl" style="padding: 0.5em 1em; display: none;">Exporter en STL</button>
+    <button id="export-dxf" style="padding: 0.5em 1em; display: none;">Exporter en DXF</button>
+  </div>
+  <div id="viewer"></div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { SVGLoader } from 'three/addons/loaders/SVGLoader.js';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { STLExporter } from 'three/addons/exporters/STLExporter.js';
+
+    const fileInput = document.getElementById('file-input');
+    const status = document.getElementById('status');
+    const colorSelectors = document.getElementById('color-selectors');
+    const exportButton = document.getElementById('export-stl');
+    const exportDxfButton = document.getElementById('export-dxf');
+    let svgGroup = null;
+    let currentScene = null;
+    let currentRenderer = null;
+    let currentControls = null;
+    let lastCameraState = null;
+
+    exportButton.addEventListener('click', () => {
+      if (!currentScene || !svgGroup) return;
+      
+      const exporter = new STLExporter();
+      const stlString = exporter.parse(svgGroup);
+      
+      const blob = new Blob([stlString], { type: 'application/octet-stream' });
+      const url = URL.createObjectURL(blob);
+      
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'model.stl';
+      link.click();
+      
+      URL.revokeObjectURL(url);
+    });
+
+    exportDxfButton.addEventListener('click', () => {
+      if (!svgGroup) return;
+      if (!window.lastSvgText) {
+        alert('SVG non disponible pour export DXF.');
+        return;
+      }
+      import('https://cdn.jsdelivr.net/npm/svg2dxf@1.0.6/dist/svg2dxf.min.js').then(module => {
+        const svg2dxf = module.default || window.svg2dxf;
+        const dxf = svg2dxf(window.lastSvgText, { version: 'AC1014' });
+        const blob = new Blob([dxf], { type: 'application/dxf' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'model.dxf';
+        a.click();
+        URL.revokeObjectURL(url);
+      }).catch(() => {
+        alert('Erreur lors de la conversion DXF.');
+      });
+    });
+
+    function createColorSelector(color) {
+      const div = document.createElement('div');
+      div.className = 'color-selector';
+      
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.id = `color-${color}`;
+      checkbox.checked = true;
+      checkbox.addEventListener('change', () => {
+        if (fileInput.files[0]) {
+          updateModel();
+        }
+      });
+      
+      const label = document.createElement('label');
+      label.htmlFor = `color-${color}`;
+      label.textContent = color === '#000000' ? 'Noir' : `Couleur`;
+      
+      const colorInput = document.createElement('input');
+      colorInput.type = 'color';
+      colorInput.value = color;
+      colorInput.addEventListener('change', () => {
+        if (fileInput.files[0]) {
+          updateModel();
+        }
+      });
+
+      const heightControl = document.createElement('div');
+      heightControl.className = 'height-control';
+      
+      const heightLabel = document.createElement('label');
+      heightLabel.textContent = 'Hauteur:';
+      
+      const heightSlider = document.createElement('input');
+      heightSlider.type = 'range';
+      heightSlider.min = '1';
+      heightSlider.max = '50';
+      heightSlider.value = '20';
+      heightSlider.addEventListener('input', () => {
+        heightValue.textContent = heightSlider.value + 'mm';
+        if (fileInput.files[0]) {
+          updateModel();
+        }
+      });
+      
+      const heightValue = document.createElement('span');
+      heightValue.className = 'height-value';
+      heightValue.textContent = heightSlider.value + 'mm';
+      
+      heightControl.appendChild(heightLabel);
+      heightControl.appendChild(heightSlider);
+      heightControl.appendChild(heightValue);
+      
+      div.appendChild(checkbox);
+      div.appendChild(label);
+      div.appendChild(colorInput);
+      div.appendChild(heightControl);
+      
+      return div;
+    }
+
+    function extractColors(paths) {
+      const colors = new Set();
+      paths.forEach(path => {
+        const color = '#' + path.color.getHexString();
+        colors.add(color);
+      });
+      return Array.from(colors).sort();
+    }
+
+    function updateColorSelectors(paths) {
+      // Sauvegarder l'état des sélections actuelles
+      const currentSelections = new Map();
+      colorSelectors.querySelectorAll('.color-selector').forEach(selector => {
+        const checkbox = selector.querySelector('input[type="checkbox"]');
+        const colorInput = selector.querySelector('input[type="color"]');
+        const heightSlider = selector.querySelector('input[type="range"]');
+        currentSelections.set(colorInput.value, {
+          checked: checkbox.checked,
+          height: heightSlider.value
+        });
+      });
+
+      colorSelectors.innerHTML = '';
+      const colors = extractColors(paths);
+      colors.forEach(color => {
+        const selector = createColorSelector(color);
+        // Restaurer l'état précédent si disponible
+        if (currentSelections.has(color)) {
+          const savedState = currentSelections.get(color);
+          selector.querySelector('input[type="checkbox"]').checked = savedState.checked;
+          const heightSlider = selector.querySelector('input[type="range"]');
+          const heightValue = selector.querySelector('.height-value');
+          heightSlider.value = savedState.height;
+          heightValue.textContent = savedState.height + 'mm';
+        }
+        colorSelectors.appendChild(selector);
+      });
+    }
+
+    function getSelectedColors() {
+      const selectedColors = [];
+      colorSelectors.querySelectorAll('.color-selector').forEach(selector => {
+        const checkbox = selector.querySelector('input[type="checkbox"]');
+        if (checkbox.checked) {
+          const colorInput = selector.querySelector('input[type="color"]');
+          const heightSlider = selector.querySelector('input[type="range"]');
+          selectedColors.push({
+            color: new THREE.Color(colorInput.value),
+            height: parseInt(heightSlider.value)
+          });
+        }
+      });
+      return selectedColors;
+    }
+
+    function colorMatches(color1, color2, tolerance = 0.01) {
+      return Math.abs(color1.r - color2.r) <= tolerance &&
+             Math.abs(color1.g - color2.g) <= tolerance &&
+             Math.abs(color1.b - color2.b) <= tolerance;
+    }
+
+    // Fonction pour optimiser et nettoyer la géométrie
+    function optimizeGeometry(geometry) {
+      // La géométrie est déjà une BufferGeometry dans Three.js r160
+      // Recalculer les normales pour un meilleur rendu
+      geometry.computeVertexNormals();
+      
+      // S'assurer que l'orientation des faces est correcte
+      geometry.computeBoundingSphere();
+      
+      return geometry;
+    }
+
+    function processAndDisplaySVG(svgText) {
+      window.lastSvgText = svgText;
+      const parser = new SVGLoader();
+      const paths = parser.parse(svgText).paths;
+
+      updateColorSelectors(paths);
+      svgGroup = new THREE.Group();
+
+      // Vérifier si au moins une couleur est sélectionnée
+      const selectedColors = getSelectedColors();
+      if (selectedColors.length === 0) {
+        status.textContent = "⚠️ Veuillez sélectionner au moins une couleur à extruder.";
+        if (currentScene) {
+          showPreview(new THREE.Group()); // Afficher un modèle vide
+        }
+        exportButton.style.display = 'none';
+        exportDxfButton.style.display = 'none';
+        return;
+      }
+
+      // Regrouper les chemins par couleur
+      const pathsByColor = new Map();
+      paths.forEach(path => {
+        const pathColor = path.color;
+        const matchingColor = selectedColors.find(c => colorMatches(pathColor, c.color));
+        if (matchingColor) {
+          const colorKey = matchingColor.color.getHexString();
+          if (!pathsByColor.has(colorKey)) {
+            pathsByColor.set(colorKey, {
+              color: matchingColor,
+              paths: []
+            });
+          }
+          pathsByColor.get(colorKey).paths.push(path);
+        }
+      });
+
+      // Traiter chaque groupe de couleur
+      pathsByColor.forEach(({ color: matchingColor, paths: colorPaths }) => {
+        // Créer un matériau spécifique pour cette couleur
+        const material = new THREE.MeshPhongMaterial({
+          color: matchingColor.color,
+          side: THREE.DoubleSide,
+          flatShading: true
+        });
+
+        // Créer une forme unique pour tous les chemins de cette couleur
+        const shapes = [];
+        
+        // Traiter chaque chemin de la couleur
+        colorPaths.forEach(path => {
+          const subPaths = path.subPaths.filter(subPath => 
+            subPath.getPoints().length >= 3
+          );
+          
+          // Trouver le contour principal et les trous
+          let mainShape = null;
+          let maxArea = 0;
+          
+          subPaths.forEach(subPath => {
+            const points = subPath.getPoints();
+            
+            // Calculer l'aire pour déterminer si c'est un trou
+            let area = 0;
+            for (let i = 0; i < points.length; i++) {
+              
+              mainShape = newShape;
+            } else {
+              if (mainShape) {
+                mainShape.holes.push(currentPath);
+              }
+            }
+          });
+          
+          if (mainShape) {
+            shapes.push(mainShape);
+          }
+        });
+
+        // Créer la géométrie pour toutes les formes de cette couleur
+        shapes.forEach(shape => {
+          const geometry = new THREE.ExtrudeGeometry(shape, {
+            depth: matchingColor.height,
+            bevelEnabled: false,
+            steps: 1,
+            curveSegments: 12
+          });
+
+          const optimizedGeometry = optimizeGeometry(geometry);
+          const mesh = new THREE.Mesh(optimizedGeometry, material);
+          svgGroup.add(mesh);
+        });
+      });
+
+      // Ajuster l'échelle globale pour que le modèle soit visible
+      const box = new THREE.Box3().setFromObject(svgGroup);
+      const size = box.getSize(new THREE.Vector3());
+      const maxSize = Math.max(size.x, size.y);
+      if (maxSize > 0) {
+        const scale = 100 / maxSize;
+        svgGroup.scale.set(scale, scale, scale);
+      }
+
+      // Afficher le bouton d'export STL
+      exportButton.style.display = 'block';
+
+      // --- Correction : ne pas réinitialiser la caméra si la scène existe déjà ---
+      if (currentScene) {
+        // Remplacer uniquement le modèle 3D, garder la caméra et le zoom
+        showPreview(svgGroup);
+        status.textContent = "✅ SVG mis à jour.";
+      } else {
+        // Première création : initialiser la scène et la caméra
+        createPreview(svgGroup);
+        status.textContent = "✅ SVG chargé et extrudé en 3D.";
+      }
+    }
+
+    function createPreview(group) {
+      const viewer = document.getElementById('viewer');
+      viewer.innerHTML = '';
+
+      currentScene = new THREE.Scene();
+      currentScene.background = new THREE.Color(0xf0f0f0);
+      
+      const camera = new THREE.PerspectiveCamera(45, 600 / 400, 0.1, 1000);
+      camera.position.set(0, 100, 100);
+      camera.up.set(0, 0, 1);
+
+      currentRenderer = new THREE.WebGLRenderer({ antialias: true });
+      currentRenderer.setSize(600, 400);
+      viewer.appendChild(currentRenderer.domElement);
+
+      currentControls = new OrbitControls(camera, currentRenderer.domElement);
+
+      const light = new THREE.DirectionalLight(0xffffff, 1);
+      light.position.set(1, 1, 1).normalize();
+      currentScene.add(light);
+      currentScene.add(new THREE.AmbientLight(0x404040));
+
+      currentScene.add(group);
+
+      function animate() {
+        requestAnimationFrame(animate);
+        currentControls.update();
+        currentRenderer.render(currentScene, camera);
+      }
+
+      animate();
+    }
+
+    function showPreview(group) {
+      while(currentScene.children.length > 0) {
+        currentScene.remove(currentScene.children[0]);
+      }
+      
+      const light = new THREE.DirectionalLight(0xffffff, 1);
+      light.position.set(1, 1, 1).normalize();
+      currentScene.add(light);
+      currentScene.add(new THREE.AmbientLight(0x404040));
+      currentScene.add(group);
+    }
+
+    function updateModel() {
+      const file = fileInput.files[0];
+      if (!file) return;
+
+      status.textContent = "🔄 Chargement du fichier SVG...";
+      const reader = new FileReader();
+      reader.onload = e => processAndDisplaySVG(e.target.result);
+      reader.readAsText(file);
+    }
+
+    fileInput.addEventListener('change', updateModel);
+  </script>
+</body>
+</html>
