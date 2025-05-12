@@ -26,6 +26,27 @@
       --preview-bg: #E3F2FD;
     }
 
+    .demo-link {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      padding: 10px 20px;
+      background: var(--primary-color);
+      color: white;
+      text-decoration: none;
+      border-radius: var(--border-radius);
+      font-weight: 500;
+      box-shadow: var(--shadow);
+      transition: all 0.3s ease;
+      z-index: 1000;
+    }
+
+    .demo-link:hover {
+      background: var(--primary-hover);
+      transform: translateY(-2px);
+      box-shadow: 0 12px 20px rgba(33,150,243,0.2);
+    }
+
     body { 
       font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
       margin: 0;
@@ -322,6 +343,7 @@
   </style>
 </head>
 <body>
+  <a href="https://julienrat.github.io/Extrudator_NG/" class="demo-link">Voir la démo en ligne</a>
   <h2>EXTRUDATOR</h2>
   
   <div class="container">
