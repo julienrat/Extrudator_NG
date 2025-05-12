@@ -2,6 +2,10 @@
 
 EXTRUDATOR_NG est un outil web qui permet de convertir des images en modèles 3D de manière simple et intuitive. Il utilise une approche de vectorisation pour transformer vos images en fichiers STL imprimables en 3D.
 
+## Démo en ligne
+
+Essayez EXTRUDATOR_NG directement dans votre navigateur : [https://julienrat.github.io/Extrudator_NG/](https://julienrat.github.io/Extrudator_NG/)
+
 ## Fonctionnalités
 
 - Importation d'images (PNG, JPG, etc.)
